@@ -31,7 +31,7 @@ tests_require = [
 
 setup(
     name='fmn.consumer',
-    version='0.1.2',
+    version='0.1.3',
     description='Backend worker daemon for Fedora Notifications',
     long_description=get_description(),
     author='Ralph Bean',
@@ -42,7 +42,7 @@ setup(
     install_requires=requires,
     tests_require=tests_require,
     test_suite='nose.collector',
-    packages=['fmn', 'fmn.consumer'],
+    packages=['fmn', 'fmn.consumer', 'fmn.consumer.backends'],
     namespace_packages=['fmn'],
     include_package_data=True,
     zip_safe=False,
