@@ -8,6 +8,14 @@ import logging
 log = logging.getLogger("fmn")
 
 
+def total_seconds(dt):
+    """ Take a datetime.timedelta object and return the total seconds.
+
+    dt.total_seconds() exists in the python 2.7 stdlib, but not in python 2.6.
+    """
+    return dt.days * 24 * 60 * 60 + dt.seconds + dt.microseconds / 1000000.0
+
+
 class FMNProducerBase(moksha.hub.api.PollingProducer):
     """ An abstract base class for our other producers. """
     def __init__(self, hub):
@@ -73,20 +81,34 @@ class DigestProducer(FMNProducerBase):
 
             # 2.1) Send and dequeue those by time
             if pref.batch_delta is not None:
-                if pref.batch_delta <= delta.total_seconds():
+                if pref.batch_delta <= total_seconds(delta):
                     log.info("Sending digest for %r per time delta" % pref)
-                    self.manage_batch(backend, pref)
+                    self.manage_batch(self.session, backend, pref)
+                    continue
 
             # 2.1) Send and dequeue those by count
             if pref.batch_count is not None:
                 if pref.batch_count <= count:
                     log.info("Sending digest for %r per msg count" % pref)
-                    self.manage_batch(backend, pref)
+                    self.manage_batch(self.session, backend, pref)
+                    continue
 
-    def manage_batch(self, backend, pref):
-        recipient = {pref.context.detail_name: pref.detail_value}
+    @staticmethod
+    def manage_batch(session, backend, pref):
+        name = pref.context.detail_name
+        recipients = [{
+            name: value.value,
+            'user': pref.user.openid,
+        } for value in pref.detail_values]
+
         queued_messages = fmn.lib.models.QueuedMessage.list_for(
-            self.session, pref.user, pref.context)
-        backend.handle_batch(recipient, queued_messages)
+            session, pref.user, pref.context)
+
+        if queued_messages:
+            log.info("* Found %r queued messages" % len(queued_messages))
+
+        for recipient in recipients:
+            backend.handle_batch(recipient, queued_messages)
+
         for message in queued_messages:
-            message.dequeue(self.session)
+            message.dequeue(session)

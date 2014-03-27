@@ -1,6 +1,7 @@
 from fmn.consumer.backends.base import BaseBackend
 import fedmsg.meta
 
+import datetime
 import smtplib
 import email
 
@@ -17,7 +18,7 @@ email {support_email} if you have any concerns/issues/abuse.
 
 reason = """
 You received this message due to your preference settings at
-{base_url}/{user}/email/{filter}
+{base_url}/{user}/email/{filter_id}
 """
 
 
@@ -55,7 +56,7 @@ class EmailBackend(BaseBackend):
         # before setting the payload.
         footer = self.config.get('fmn.email.footer', '')
 
-        if 'filter' in recipient and 'user' in recipient:
+        if 'filter_id' in recipient and 'user' in recipient:
             base_url = self.config['fmn.base_url']
             footer = reason.format(base_url=base_url, **recipient) + footer
 
@@ -80,12 +81,19 @@ class EmailBackend(BaseBackend):
         self.send_mail(recipient, subject, content)
 
     def handle_batch(self, recipient, queued_messages):
-        subject = "Fedora Notifications Digest"
+        def _format_line(msg):
+            timestamp = datetime.datetime.fromtimestamp(msg['timestamp'])
+            payload = fedmsg.meta.msg2repr(msg, **self.config)
+            return timestamp.strftime("%c") + ", " + payload
+
+        n = len(queued_messages)
+        subject = "Fedora Notifications Digest (%i updates)" % n
         content = "\n".join([
-            fedmsg.meta.msg2repr(queued_message.msg, **self.config)
+            _format_line(queued_message.message)
             for queued_message in queued_messages])
 
         self.send_mail(recipient, subject, content)
+
 
     def handle_confirmation(self, confirmation):
         confirmation.set_status(self.session, 'valid')
