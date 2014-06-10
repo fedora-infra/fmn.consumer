@@ -23,6 +23,7 @@ requires = [
     'fmn.lib',
     'fedmsg',
     'requests',
+    'arrow',
 ]
 
 tests_require = [
@@ -31,7 +32,7 @@ tests_require = [
 
 setup(
     name='fmn.consumer',
-    version='0.2.3',
+    version='0.2.4',
     description='Backend worker daemon for Fedora Notifications',
     long_description=get_description(),
     author='Ralph Bean',

@@ -18,7 +18,26 @@ config = {
         },
     },
 
+    # Colors:
+    "irc_color_lookup": {
+        "fas": "light blue",
+        "bodhi": "green",
+        "git": "red",
+        "tagger": "brown",
+        "wiki": "purple",
+        "logger": "orange",
+        "pkgdb": "teal",
+        "buildsys": "yellow",
+        "planet": "light green",
+        "fmn": "purple",
+    },
+
     ## Backend stuff ##
+
+    # This is the list of enabled backends (so we can turn one off globally)
+    #"fmn.backends": ['email', 'irc', 'android'],
+    "fmn.backends": ['email', 'irc'],
+
     # Email
     "fmn.email.mailserver": "127.0.0.1:25",
     "fmn.email.from_address": "notifications@fedoraproject.org",
@@ -43,6 +62,7 @@ config = {
     "endpoints": {
         "fmn.%s" % hostname: [
             "tcp://127.0.0.1:3041",
+            "tcp://127.0.0.1:3042",
         ],
     },
     "logging": dict(

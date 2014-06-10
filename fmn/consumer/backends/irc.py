@@ -2,7 +2,9 @@ import fmn.lib.models
 from fmn.consumer.backends.base import BaseBackend
 import fedmsg.meta
 
+import arrow
 import requests
+import time
 
 import twisted.internet.protocol
 import twisted.words.protocols.irc
@@ -29,6 +31,25 @@ You can update your preferences at {base_url}
 You can contact {support_email} if you have any concerns/issues/abuse.
 """
 
+mirc_colors = {
+    "white": 0,
+    "black": 1,
+    "blue": 2,
+    "green": 3,
+    "red": 4,
+    "brown": 5,
+    "purple": 6,
+    "orange": 7,
+    "yellow": 8,
+    "light green": 9,
+    "teal": 10,
+    "light cyan": 11,
+    "light blue": 12,
+    "pink": 13,
+    "grey": 14,
+    "light grey": 15,
+}
+
 
 def _shorten(link):
     if not link:
@@ -37,18 +58,39 @@ def _shorten(link):
 
 
 def _format_message(msg, recipient, config):
-    template = u"{title} -- {subtitle} {link}{flt}"
+    template = u"{title} -- {subtitle} {delta}{link}{flt}"
     title = fedmsg.meta.msg2title(msg, **config)
     subtitle = fedmsg.meta.msg2subtitle(msg, **config)
-    link = _shorten(fedmsg.meta.msg2link(msg, **config))
+    link = fedmsg.meta.msg2link(msg, **config)
+
+    if recipient['shorten_links']:
+        link = _shorten(link)
+
+    # Tack a human-readable delta on the end so users know that fmn is
+    # backlogged (if it is).
+    delta = ''
+    if abs(time.time() - msg['timestamp']) > 10:
+        delta = arrow.get(msg['timestamp']).humanize() + ' '
 
     flt = ''
-    if 'filter_id' in recipient:
-        flt_template = "{base_url}/{user}/irc/{filter_id}"
-        flt = "    (triggered by %s)" % _shorten(flt_template.format(
-            base_url=config['fmn.base_url'], **recipient))
+    if recipient['triggered_by_links'] and 'filter_id' in recipient:
+        flt_template = "{base_url}{user}/irc/{filter_id}"
+        flt_link = flt_template.format(
+            base_url=config['fmn.base_url'], **recipient)
+        if recipient['shorten_links']:
+            flt_link = _shorten(flt_link)
+        flt = "    (triggered by %s)" % flt_link
 
-    return template.format(title=title, subtitle=subtitle, link=link, flt=flt)
+    if recipient['markup_messages']:
+        markup = lambda s, color: "\x03%i%s\x03" % (mirc_colors[color], s)
+        color_lookup = config.get('irc_color_lookup', {})
+        title_color = color_lookup.get(title.split('.')[0], "light grey")
+        title = markup(title, title_color)
+        if link:
+            link = markup(link, "teal")
+
+    return template.format(title=title, subtitle=subtitle, delta=delta,
+                           link=link, flt=flt)
 
 
 class IRCBackend(BaseBackend):
@@ -85,19 +127,25 @@ class IRCBackend(BaseBackend):
 
     def cmd_start(self, nick, message):
         self.log.info("CMD start: %r sent us %r" % (nick, message))
-        if self.disabled_for(nick):
-            self.enable(nick)
+        sess = fmn.lib.models.init(self.config.get('fmn.sqlalchemy.uri'))
+        if self.disabled_for(sess, nick):
+            self.enable(sess, nick)
             self.send(nick, "OK")
         else:
             self.send(nick, "Messages not currently stopped.  Nothing to do.")
+        sess.commit()
+        sess.close()
 
     def cmd_stop(self, nick, message):
         self.log.info("CMD stop:  %r sent us %r" % (nick, message))
-        if self.disabled_for(nick):
+        sess = fmn.lib.models.init(self.config.get('fmn.sqlalchemy.uri'))
+        if self.disabled_for(sess, nick):
             self.send(nick, "Messages already stopped.  Nothing to do.")
         else:
-            self.disable(nick)
+            self.disable(sess, nick)
             self.send(nick, "OK")
+        sess.commit()
+        sess.close()
 
     def cmd_help(self, nick, message):
         self.log.info("CMD help:  %r sent us %r" % (nick, message))
@@ -119,14 +167,14 @@ class IRCBackend(BaseBackend):
         self.log.info("CMD unk:   %r sent us %r" % (nick, message))
         self.send(nick, "say 'help' for help or 'stop' to stop messages")
 
-    def handle(self, recipient, msg, streamline=False):
+    def handle(self, session, recipient, msg, streamline=False):
         user = recipient['user']
 
         if not self.clients:
             # This is usually the case if we are suffering a netsplit.
             self.log.warning("IRCBackend has no clients to work with; enqueue")
             fmn.lib.models.QueuedMessage.enqueue(
-                self.session, user, 'irc', msg)
+                session, user, 'irc', msg)
             return
 
         self.log.debug("Notifying via irc %r" % recipient)
@@ -137,11 +185,10 @@ class IRCBackend(BaseBackend):
 
         # Handle any backlog that may have accumulated while we were suffering
         # a netsplit.
-        preference_obj = fmn.lib.models.Preference.load(
-            self.session, user, 'irc')
+        preference_obj = fmn.lib.models.Preference.load(session, user, 'irc')
         if not streamline:
             fmn.consumer.producer.DigestProducer.manage_batch(
-                self.session, self, preference_obj)
+                session, self, preference_obj)
 
         # With all of that out of the way, now we can actually send them the
         # message that triggered all this.
@@ -149,7 +196,7 @@ class IRCBackend(BaseBackend):
 
         nickname = recipient['irc nick']
 
-        if self.disabled_for(detail_value=nickname):
+        if self.disabled_for(session, detail_value=nickname):
             self.log.debug("Messages stopped for %r, not sending." % nickname)
             return
 
@@ -159,11 +206,12 @@ class IRCBackend(BaseBackend):
                 message.encode('utf-8'),
             )
 
-    def handle_batch(self, recipient, queued_messages):
+    def handle_batch(self, session, recipient, queued_messages):
         for queued_message in queued_messages:
-            self.handle(recipient, queued_message.message, streamline=True)
+            self.handle(session, recipient, queued_message.message,
+                        streamline=True)
 
-    def handle_confirmation(self, confirmation):
+    def handle_confirmation(self, session, confirmation):
         if not self.clients:
             self.log.warning("IRCBackend has no clients to work with.")
             return
@@ -174,16 +222,16 @@ class IRCBackend(BaseBackend):
         for client in self.clients:
             client.msg((u'NickServ').encode('utf-8'), query.encode('utf-8'))
 
-    def handle_confirmation_valid_nick(self, nick):
+    def handle_confirmation_valid_nick(self, session, nick):
         if not self.clients:
             self.log.warning("IRCBackend has no clients to work with.")
             return
 
         confirmations = fmn.lib.models.Confirmation.by_detail(
-            self.session, context="irc", value=nick)
+            session, context="irc", value=nick)
 
         for confirmation in confirmations:
-            confirmation.set_status(self.session, 'valid')
+            confirmation.set_status(session, 'valid')
             acceptance_url = self.config['fmn.acceptance_url'].format(
                 secret=confirmation.secret)
             rejection_url = self.config['fmn.rejection_url'].format(
@@ -200,11 +248,11 @@ class IRCBackend(BaseBackend):
                 for client in self.clients:
                     client.msg(nick.encode('utf-8'), line.encode('utf-8'))
 
-    def handle_confirmation_invalid_nick(self, nick):
+    def handle_confirmation_invalid_nick(self, session, nick):
         confirmations = fmn.lib.models.Confirmation.by_detail(
-            self.session, context="irc", value=nick)
+            session, context="irc", value=nick)
         for confirmation in confirmations:
-            confirmation.set_status(self.session, 'invalid')
+            confirmation.set_status(session, 'invalid')
 
     def cleanup_clients(self, factory):
         self.clients = [c for c in self.clients if c.factory != factory]
@@ -246,16 +294,22 @@ class IRCBackendProtocol(twisted.words.protocols.irc.IRCClient):
         # We query NickServ off the bat.  This is probably her responding.
         # We check NickServ before doing confirmations, so, let's do that now.
         if user == "NickServ!NickServ@services.":
-            nickname, commands, result = msg.split(None, 2)
+            nick, commands, result = msg.split(None, 2)
+
+            s = fmn.lib.models.init(self.config.get('fmn.sqlalchemy.uri'))
+
             if result.strip() == '3':
                 # Then all is good.
                 # 1) the nickname is registered
                 # 2) the person is currently logged in and identified.
-                self.factory.parent.handle_confirmation_valid_nick(nickname)
+                self.factory.parent.handle_confirmation_valid_nick(s, nick)
             else:
                 # Something is off.  There are a number of possible scenarios,
                 # but we'll just report back "invalid"
-                self.factory.parent.handle_confirmation_invalid_nick(nickname)
+                self.factory.parent.handle_confirmation_invalid_nick(s, nick)
+
+            s.commit()
+            s.close()
         else:
             # If it's not NickServ, then it might be a user asking for help
             nick = user.split("!")[0]
@@ -270,11 +324,21 @@ class IRCClientFactory(twisted.internet.protocol.ClientFactory):
         self.parent = parent
 
     def clientConnectionLost(self, connector, reason):
-        self.parent.log.warning("Lost connection %r, reconnecting." % reason)
         self.parent.cleanup_clients(factory=self)
+
+        if self.parent.die:
+            self.parent.log.warning("Lost IRC connection.  Shutting down.")
+            return
+
+        self.parent.log.warning("Lost connection %r, reconnecting." % reason)
         connector.connect()
 
     def clientConnectionFailed(self, connector, reason):
-        self.parent.log.warning("Could not connect: %r, retry in 60s" % reason)
         self.parent.cleanup_clients(factory=self)
+
+        if self.parent.die:
+            self.parent.log.warning("Couldn't connect to IRC.  Shutting down.")
+            return
+
+        self.parent.log.error("Could not connect: %r, retry in 60s" % reason)
         reactor.callLater(60, connector.connect)

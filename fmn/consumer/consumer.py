@@ -18,16 +18,13 @@ class FMNConsumer(fedmsg.consumers.FedmsgConsumer):
         log.debug("FMNConsumer initializing")
         super(FMNConsumer, self).__init__(*args, **kwargs)
 
-        uri = self.hub.config.get('fmn.sqlalchemy.uri', None)
+        self.uri = self.hub.config.get('fmn.sqlalchemy.uri', None)
 
-        if not uri:
+        if not self.uri:
             raise ValueError('fmn.sqlalchemy.uri must be present')
 
-        log.debug("Setting up DB session")
-        self.session = fmn.lib.models.init(uri)
-
         log.debug("Instantiating FMN backends")
-        backend_kwargs = dict(config=self.hub.config, session=self.session)
+        backend_kwargs = dict(config=self.hub.config)
         self.backends = {
             'email': fmn_backends.EmailBackend(**backend_kwargs),
             'irc': fmn_backends.IRCBackend(**backend_kwargs),
@@ -35,33 +32,77 @@ class FMNConsumer(fedmsg.consumers.FedmsgConsumer):
             #'rss': fmn_backends.RSSBackend,
         }
 
+        # But, disable any of those backends that don't appear explicitly in
+        # our config.
+        for key, value in self.backends.items():
+            if key not in self.hub.config['fmn.backends']:
+                del self.backends[key]
+
+        # Also, check that we don't have something enabled that's not explicit
+        for key in self.hub.config['fmn.backends']:
+            if key not in self.backends:
+                raise ValueError("%r in fmn.backends (%r) is invalid" % (
+                    key, self.hub.config['fmn.backends']))
+
         log.debug("Loading rules from fmn.rules")
         self.valid_paths = fmn.lib.load_rules(root="fmn.rules")
 
+        self.cached_preferences = None
+
         log.debug("FMNConsumer initialized")
 
+    def refresh_cache(self, session, topic=None, msg=None):
+        log.debug("Loading and caching preferences")
+        self.cached_preferences = fmn.lib.load_preferences(
+            session, self.hub.config, self.valid_paths)
+
+    def make_session(self):
+        return fmn.lib.models.init(self.uri)
+
     def consume(self, raw_msg):
+        session = self.make_session()
+        try:
+            self.work(session, raw_msg)
+            session.commit()  # transaction is committed here
+        except:
+            session.rollback()  # rolls back the transaction
+            raise
+
+    def work(self, session, raw_msg):
         topic, msg = raw_msg['topic'], raw_msg['body']
 
-        log.debug("Received topic %r" % topic)
+        log.debug("FMNConsumer received topic %r" % topic)
 
-        results = fmn.lib.recipients(self.session, self.hub.config,
-                                     self.valid_paths, msg)
+        if '.fmn.' in topic or not self.cached_preferences:
+            self.refresh_cache(session, topic, msg)
 
+        results = fmn.lib.recipients(self.cached_preferences, msg,
+                                     self.valid_paths, self.hub.config)
+
+        # Anyways, let's look at the results of our matching operation and send
+        # stuff where we need to.
         for context, recipients in results.items():
+            if not recipients:
+                continue
             log.debug("  Considering %r with %i recips" % (
                 context, len(list(recipients))))
             backend = self.backends[context]
             for recipient in recipients:
                 user = recipient['user']
                 pref = fmn.lib.models.Preference.load(
-                    self.session, user, context)
+                    session, user, context)
 
                 if not pref.should_batch:
                     log.debug("    Calling backend %r with %r" % (
                         backend, recipient))
-                    backend.handle(recipient, msg)
+                    backend.handle(session, recipient, msg)
                 else:
                     log.debug("    Queueing msg for digest")
                     fmn.lib.models.QueuedMessage.enqueue(
-                        self.session, user, context, msg)
+                        session, user, context, msg)
+
+    def stop(self):
+        log.info("Cleaning up FMNConsumer.")
+        for context, backend in self.backends.iteritems():
+            backend.stop()
+        super(FMNConsumer, self).stop()
