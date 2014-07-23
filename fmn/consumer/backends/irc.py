@@ -79,7 +79,7 @@ def _format_message(msg, recipient, config):
             base_url=config['fmn.base_url'], **recipient)
         if recipient['shorten_links']:
             flt_link = _shorten(flt_link)
-        flt = "    (triggered by %s)" % flt_link
+        flt = "    ( triggered by %s )" % flt_link
 
     if recipient['markup_messages']:
         markup = lambda s, color: "\x03%i%s\x03" % (mirc_colors[color], s)
@@ -296,7 +296,8 @@ class IRCBackendProtocol(twisted.words.protocols.irc.IRCClient):
         if user == "NickServ!NickServ@services.":
             nick, commands, result = msg.split(None, 2)
 
-            s = fmn.lib.models.init(self.config.get('fmn.sqlalchemy.uri'))
+            uri = self.factory.parent.config.get('fmn.sqlalchemy.uri'))
+            s = fmn.lib.models.init(uri)
 
             if result.strip() == '3':
                 # Then all is good.
