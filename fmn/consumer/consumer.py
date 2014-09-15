@@ -1,5 +1,7 @@
 # An example fedmsg koji consumer
 
+import threading
+
 import fedmsg.consumers
 import fmn.lib
 import fmn.rules.utils
@@ -47,13 +49,15 @@ class FMNConsumer(fedmsg.consumers.FedmsgConsumer):
         self.valid_paths = fmn.lib.load_rules(root="fmn.rules")
 
         self.cached_preferences = None
+        self.cached_preferences_lock = threading.Lock()
 
         log.debug("FMNConsumer initialized")
 
     def refresh_cache(self, session, topic=None, msg=None):
-        log.debug("Loading and caching preferences")
-        self.cached_preferences = fmn.lib.load_preferences(
-            session, self.hub.config, self.valid_paths)
+        log.info("Loading and caching preferences")
+        with self.cached_preferences_lock:
+            self.cached_preferences = fmn.lib.load_preferences(
+                session, self.hub.config, self.valid_paths, cull_disabled=True)
 
     def make_session(self):
         return fmn.lib.models.init(self.uri)
@@ -89,12 +93,41 @@ class FMNConsumer(fedmsg.consumers.FedmsgConsumer):
 
         # If a user has tweaked something in the pkgdb2 db, then invalidate our
         # dogpile cache.. but only the parts that have something to do with any
-        # one of the users involved in the pkgdb2 interaction.
+        # one of the users involved in the pkgdb2 interaction.  Note that a
+        # 'username' here could be an actual username, or a group name like
+        # 'group::infra-sig'.
         if '.pkgdb.' in topic:
             usernames = fedmsg.meta.msg2usernames(msg, **self.hub.config)
             for username in usernames:
                 log.info("Invalidating pkgdb2 dogpile cache for %r" % username)
                 target = fmn.rules.utils.get_packages_of_user
+                fmn.rules.utils.invalidate_cache_for(
+                    self.hub.config, target, username)
+
+        # Create a local account with all the default rules if an user is added
+        # to the `packager` group in FAS
+        if '.fas.group.member.sponsor' in topic:
+            group = msg['msg']['group']
+            if group == 'packager':
+                usernames = fedmsg.meta.msg2usernames(msg, **self.hub.config)
+                for username in usernames:
+                    openid='%s.id.fedoraproject.org' % username
+                    openid_url = 'https://%s.id.fedoraproject.org' % username
+                    email = '%s@fedoraproject.org' % username
+                    user = fmn.lib.models.User.get_or_create(
+                        session, openid=openid, openid_url=openid_url,
+                        create_defaults=True, detail_values=dict(email=email),
+                    )
+                    session.add(user)
+                session.commit()
+                self.refresh_cache(session, topic, msg)
+
+        # Do the same invalidation trick for fas group membership changes.
+        if '.fas.group.' in topic:
+            usernames = fedmsg.meta.msg2usernames(msg, **self.hub.config)
+            for username in usernames:
+                log.info("Invalidating fas cache for %r" % username)
+                target = fmn.rules.utils.get_groups_of_user
                 fmn.rules.utils.invalidate_cache_for(
                     self.hub.config, target, username)
 
