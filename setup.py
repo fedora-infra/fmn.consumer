@@ -17,7 +17,7 @@ except:
 
 def get_description():
     with open('README.rst', 'r') as f:
-        return '\n'.join(f.readlines()[2:])
+        return ''.join(f.readlines()[2:])
 
 requires = [
     'fmn.lib',
@@ -32,7 +32,7 @@ tests_require = [
 
 setup(
     name='fmn.consumer',
-    version='0.4.1',
+    version='0.4.3',
     description='Backend worker daemon for Fedora Notifications',
     long_description=get_description(),
     author='Ralph Bean',
