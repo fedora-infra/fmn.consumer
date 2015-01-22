@@ -5,6 +5,7 @@ import random
 
 import fedmsg.consumers
 import fmn.lib
+import fmn.lib.multiproc
 import fmn.rules.utils
 import backends as fmn_backends
 
@@ -56,6 +57,10 @@ class FMNConsumer(fedmsg.consumers.FedmsgConsumer):
         session = self.make_session()
         self.refresh_cache(session)
         session.close()
+
+        self.local = threading.local()
+        self.num_procs = int(self.hub.config.get('fmn.processes', 1))
+        self._pools = []
 
         log.debug("FMNConsumer initialized")
 
@@ -162,6 +167,11 @@ class FMNConsumer(fedmsg.consumers.FedmsgConsumer):
                 fmn.rules.utils.invalidate_cache_for(
                     self.hub.config, target, username)
 
+        # Creating our multiproc pool if we don't already have one.
+        if not hasattr(self.local, 'pool'):
+            self.local.pool = fmn.lib.multiproc.FixedPool(self.num_procs)
+            self._pools.append(self.local.pool)
+
         # With cache management done, we can move on to the real work.
         # Compute, based on our in-memory cache of preferences, who we think
         # should receive this message.
@@ -174,7 +184,8 @@ class FMNConsumer(fedmsg.consumers.FedmsgConsumer):
         random.shuffle(preferences)
         # And do the real work of comparing every rule against the message.
         results = fmn.lib.recipients(preferences, msg,
-                                     self.valid_paths, self.hub.config)
+                                     self.valid_paths, self.hub.config,
+                                     pool=self.local.pool)
 
         # Let's look at the results of our matching operation and send stuff
         # where we need to.
@@ -200,6 +211,8 @@ class FMNConsumer(fedmsg.consumers.FedmsgConsumer):
 
     def stop(self):
         log.info("Cleaning up FMNConsumer.")
+        for pool in self._pools:
+            pool.close()
         for context, backend in self.backends.iteritems():
             backend.stop()
         super(FMNConsumer, self).stop()

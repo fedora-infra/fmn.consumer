@@ -7,6 +7,11 @@ config = {
     "fmn.consumer.enabled": True,
     "fmn.sqlalchemy.uri": "sqlite:////var/tmp/fmn-dev-db.sqlite",
     "fmn.autocreate": True,  # Should new packagers auto-get accounts?
+    "fmn.processes": 1,
+
+    "moksha.workers_per_consumer": 1,
+    "moksha.threadpool_size": 4,
+
 
     # Some configuration for the rule processors
     "fmn.rules.utils.use_pkgdb2": False,
