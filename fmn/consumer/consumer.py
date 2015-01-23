@@ -58,9 +58,23 @@ class FMNConsumer(fedmsg.consumers.FedmsgConsumer):
         self.refresh_cache(session)
         session.close()
 
+        # Set up a coat-rack to hang our multiprocessing pools on.  Each fedmsg
+        # worker thread gets its own little multiprocessing pool.
         self.local = threading.local()
         self.num_procs = int(self.hub.config.get('fmn.processes', 1))
         self._pools = []
+
+        # This little deletion is a hack for Fedora Infrastructure.
+        # Our /etc/fedmsg.d/ config contains a logging dict with a
+        # ContextInjector object which just so happens to not be pickle-able.
+        # This consumers needs the config dict to be pickleable so it can
+        # serialize it over to subprocesses in its worker pools.  So, we delete
+        # it.  It looks pretty dangerous to just go deleting things from the
+        # config like this, but this one is "okay" -- the logging dict gets
+        # used in fedmsg/commands/__init__.py early on when fedmsg-hub first
+        # starts up, and is never used again.
+        if 'logging' in self.hub.config:
+            del self.hub.config['logging']
 
         log.debug("FMNConsumer initialized")
 
