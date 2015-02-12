@@ -1,5 +1,5 @@
 import socket
-hostname = socket.gethostname().split('.')[-1]
+hostname = socket.gethostname().split('.')[0]
 
 
 config = {
@@ -7,6 +7,13 @@ config = {
     "fmn.consumer.enabled": True,
     "fmn.sqlalchemy.uri": "sqlite:////var/tmp/fmn-dev-db.sqlite",
     "fmn.autocreate": True,  # Should new packagers auto-get accounts?
+    "fmn.junk_suffixes": [
+        '.buildsys.package.list.state.change',
+        '.buildsys.tag',
+        '.buildsys.untag',
+        '.buildsys.repo.init',
+        '.buildsys.repo.done',
+    ],
 
     # Some configuration for the rule processors
     "fmn.rules.utils.use_pkgdb2": False,

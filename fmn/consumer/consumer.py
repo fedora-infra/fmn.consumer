@@ -1,6 +1,8 @@
 # An example fedmsg koji consumer
 
 import threading
+import time
+import random
 
 import fedmsg.consumers
 import fmn.lib
@@ -21,6 +23,7 @@ class FMNConsumer(fedmsg.consumers.FedmsgConsumer):
 
         self.uri = self.hub.config.get('fmn.sqlalchemy.uri', None)
         self.autocreate = self.hub.config.get('fmn.autocreate', False)
+        self.junk_suffixes = self.hub.config.get('fmn.junk_suffixes', [])
 
         if not self.uri:
             raise ValueError('fmn.sqlalchemy.uri must be present')
@@ -92,7 +95,13 @@ class FMNConsumer(fedmsg.consumers.FedmsgConsumer):
     def work(self, session, raw_msg):
         topic, msg = raw_msg['topic'], raw_msg['body']
 
-        log.debug("FMNConsumer received topic %r" % topic)
+        for suffix in self.junk_suffixes:
+            if topic.endswith(suffix):
+                log.debug("Dropping %r", topic)
+                return
+
+        start = time.time()
+        log.debug("FMNConsumer received %s %s", msg['msg_id'], msg['topic'])
 
         # First, do some cache management.  This can be confusing because there
         # are two different caches, with two different mechanisms, storing two
@@ -164,8 +173,20 @@ class FMNConsumer(fedmsg.consumers.FedmsgConsumer):
         # With cache management done, we can move on to the real work.
         # Compute, based on our in-memory cache of preferences, who we think
         # should receive this message.
-        results = fmn.lib.recipients(self.cached_preferences, msg,
+
+        # First, make a thread-local copy of our shared cached prefs
+        preferences = list(self.cached_preferences)
+        # Shuffle it so that not all threads step through the list in the same
+        # order.  This should cut down on competition for the dogpile lock when
+        # getting pkgdb info at startup.
+        random.shuffle(preferences)
+        # And do the real work of comparing every rule against the message.
+        results = fmn.lib.recipients(preferences, msg,
                                      self.valid_paths, self.hub.config)
+
+        log.debug("Recipients found %i dt %0.2fs %s %s",
+                  len(results), time.time() - start,
+                  msg['msg_id'], msg['topic'])
 
         # Let's look at the results of our matching operation and send stuff
         # where we need to.
@@ -188,6 +209,9 @@ class FMNConsumer(fedmsg.consumers.FedmsgConsumer):
                     log.debug("    Queueing msg for digest")
                     fmn.lib.models.QueuedMessage.enqueue(
                         session, user, context, msg)
+
+        log.debug("Done.  %0.2fs %s %s",
+                  time.time() - start, msg['msg_id'], msg['topic'])
 
     def stop(self):
         log.info("Cleaning up FMNConsumer.")
