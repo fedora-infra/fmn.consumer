@@ -4,10 +4,17 @@ import threading
 import time
 import random
 
+import fedora.client
 import fedmsg.consumers
 import fmn.lib
 import fmn.rules.utils
 import backends as fmn_backends
+
+from fmn.consumer.util import (
+    new_packager,
+    new_badges_user,
+    get_fas_email,
+)
 
 import logging
 log = logging.getLogger("fmn")
@@ -147,7 +154,7 @@ class FMNConsumer(fedmsg.consumers.FedmsgConsumer):
                 log.info("Autocreating account for %r" % username)
                 openid = '%s.id.fedoraproject.org' % username
                 openid_url = 'https://%s.id.fedoraproject.org' % username
-                email = '%s@fedoraproject.org' % username
+                email = self.get_fas_email(self.hub.config, username)
                 user = fmn.lib.models.User.get_or_create(
                     session, openid=openid, openid_url=openid_url,
                     create_defaults=True, detail_values=dict(email=email),
@@ -209,6 +216,11 @@ class FMNConsumer(fedmsg.consumers.FedmsgConsumer):
                     log.debug("    Queueing msg for digest")
                     fmn.lib.models.QueuedMessage.enqueue(
                         session, user, context, msg)
+                if ('filter_oneshot' in recipient
+                        and recipient['filter_oneshot']):
+                    log.debug("    Marking one-shot filter as fired")
+                    fltr = fmn.lib.models.Filter.get(recipient['filter_id'])
+                    fltr.fired(session)
 
         log.debug("Done.  %0.2fs %s %s",
                   time.time() - start, msg['msg_id'], msg['topic'])
@@ -218,18 +230,3 @@ class FMNConsumer(fedmsg.consumers.FedmsgConsumer):
         for context, backend in self.backends.iteritems():
             backend.stop()
         super(FMNConsumer, self).stop()
-
-
-def new_packager(topic, msg):
-    """ Returns a username if the message is about a new packager in FAS. """
-    if '.fas.group.member.sponsor' in topic:
-        group = msg['msg']['group']
-        if group == 'packager':
-            return msg['msg']['user']
-    return None
-
-def new_badges_user(topic, msg):
-    """ Returns a username if the message is about a new fedbadges user. """
-    if '.fedbadges.person.login.first' in topic:
-        return msg['msg']['user']['username']
-    return None

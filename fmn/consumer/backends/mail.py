@@ -7,8 +7,10 @@ import datetime
 import smtplib
 import email
 
+from fmn.consumer.util import get_fas_email
 
-confirmation_template = u"""
+
+CONFIRMATION_TEMPLATE = u"""
 {username} has requested that notifications be sent to this email address
 * To accept, visit this address:
   {acceptance_url}
@@ -69,7 +71,8 @@ class EmailBackend(BaseBackend):
         # before setting the payload.
         footer = to_unicode(self.config.get('fmn.email.footer', ''))
 
-        if 'filter_id' in recipient and 'user' in recipient:
+        triggered_by = recipient['triggered_by_links']
+        if 'filter_id' in recipient and 'user' in recipient and triggered_by:
             base_url = self.config['fmn.base_url']
             footer = reason.format(base_url=base_url, **recipient) + footer
 
@@ -85,6 +88,8 @@ class EmailBackend(BaseBackend):
                 [to_bytes(recipient['email address'])],
                 to_bytes(email_message.as_string()),
             )
+        except smtplib.SMTPRecipientsRefused:
+            self.handle_bad_email_address(session, recipient)
         except:
             self.log.info("%r" % email_message.as_string())
             raise
@@ -110,7 +115,13 @@ class EmailBackend(BaseBackend):
         def _format_line(msg):
             timestamp = datetime.datetime.fromtimestamp(msg['timestamp'])
             link = fedmsg.meta.msg2link(msg, **self.config) or u''
-            payload = fedmsg.meta.msg2long_form(msg, **self.config) or u''
+            payload = fedmsg.meta.msg2subtitle(msg, **self.config) or u''
+
+            if recipient.get('verbose', True):
+                longform = fedmsg.meta.msg2long_form(msg, **self.config) or u''
+                if longform:
+                    payload += "\n" + longform
+
             return timestamp.strftime("%c") + ", " + payload + "\n\t" + link
 
         n = len(queued_messages)
@@ -141,7 +152,9 @@ class EmailBackend(BaseBackend):
         rejection_url = self.config['fmn.rejection_url'].format(
             secret=confirmation.secret)
 
-        content = confirmation_template.format(
+        template = self.config.get('fmn.mail_confirmation_template',
+                                   CONFIRMATION_TEMPLATE)
+        content = template.format(
             acceptance_url=acceptance_url,
             rejection_url=rejection_url,
             support_email=self.config['fmn.support_email'],
@@ -152,3 +165,28 @@ class EmailBackend(BaseBackend):
         recipient = {'email address': confirmation.detail_value}
 
         self.send_mail(session, recipient, subject, content)
+
+    def handle_bad_email_address(self, session, recipient):
+        """ Handle a bad email address.
+        1) Look up the account in FAS.  Use their email there if possible.
+        2) If not, then just disable their account.
+
+        See https://github.com/fedora-infra/fmn/issues/28
+        """
+
+        address = recipient['email address']
+        user = recipient['user']
+        self.log.warning("Dealing with bad email %s, %s" % (address, user))
+        pref = self.preference_for(session, address)
+        if address.endswith('@fedoraproject.org'):
+            fas_email = get_fas_email(user, **self.config)
+            self.log.info("Got fas email as %r " % fas_email)
+            if fas_email != address:
+                pref.delete_details(address)
+                pref.update_details(fas_email)
+            else:
+                self.log.warning("Disabling %s for good..." % user)
+                pref.disable()
+        else:
+            self.log.warning("Disabling %s for good..." % user)
+            pref.disable()

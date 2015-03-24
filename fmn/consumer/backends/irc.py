@@ -11,7 +11,7 @@ import twisted.words.protocols.irc
 
 from twisted.internet import reactor
 
-confirmation_template = """
+CONFIRMATION_TEMPLATE = """
 {username} has requested that notifications be sent to this nick
 * To accept, visit this address:
   {acceptance_url}
@@ -22,7 +22,7 @@ email {support_email} if you have any concerns/issues/abuse.
 I am run by Fedora Infrastructure.  Type 'help' for more information.
 """
 
-help_template = """
+HELP_TEMPLATE = """
 I am a notifications bot run by Fedora Infrastructure.  My commands are:
   'stop'  -- stops all messages
   'start' -- starts sending messages again
@@ -63,16 +63,20 @@ def _format_message(msg, recipient, config):
     # call to `fedmsg.meta.conglomerate(..)`
     if not 'subtitle' in msg:
         # This handles normal, 'raw' messages which get passed through msg2*.
-        template = u"{title} -- {subtitle} {delta}{link}{flt}"
         title = fedmsg.meta.msg2title(msg, **config)
         subtitle = fedmsg.meta.msg2subtitle(msg, **config)
         link = fedmsg.meta.msg2link(msg, **config)
+        # Only prefix with topic if we're "marking up" messages.
+        if recipient['markup_messages']:
+            template = u"{title} -- {subtitle} {delta}{link}{flt}"
+        else:
+            template = u"{subtitle} {delta}{link}{flt}"
     else:
         # This handles messages that have already been 'conglomerated'.
-        template = u"{subtitle} {delta}{link}{flt}"
         title = u""
         subtitle = msg['subtitle']
         link = msg['link']
+        template = u"{subtitle} {delta}{link}{flt}"
 
     if recipient['shorten_links']:
         link = _shorten(link)
@@ -161,7 +165,7 @@ class IRCBackend(BaseBackend):
     def cmd_help(self, nick, message):
         self.log.info("CMD help:  %r sent us %r" % (nick, message))
 
-        lines = help_template.format(
+        lines = self.config.get('fmn.irc_help_template', HELP_TEMPLATE).format(
             support_email=self.config['fmn.support_email'],
             base_url=self.config['fmn.base_url'],
         ).strip().split('\n')
@@ -251,7 +255,9 @@ class IRCBackend(BaseBackend):
             rejection_url = self.config['fmn.rejection_url'].format(
                 secret=confirmation.secret)
 
-            lines = confirmation_template.format(
+            template = self.config.get('fmn.irc_confirmation_template',
+                                       CONFIRMATION_TEMPLATE)
+            lines = template.format(
                 acceptance_url=acceptance_url,
                 rejection_url=rejection_url,
                 support_email=self.config['fmn.support_email'],
