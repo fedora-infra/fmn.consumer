@@ -33,7 +33,7 @@ tests_require = [
 
 setup(
     name='fmn.consumer',
-    version='0.8.1',
+    version='1.0.0',
     description='Backend worker daemon for Fedora Notifications',
     long_description=get_description(),
     author='Ralph Bean',
@@ -57,10 +57,6 @@ setup(
     entry_points={
         'moksha.consumer': [
             "fedmsg_notifications_consumer = fmn.consumer:FMNConsumer",
-        ],
-        'moksha.producer': [
-            "fmn_confirmations_producer = fmn.consumer:ConfirmationProducer",
-            "fmn_digest_producer = fmn.consumer:DigestProducer",
         ],
     },
 )
