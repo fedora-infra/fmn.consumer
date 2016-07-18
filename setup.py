@@ -25,6 +25,7 @@ requires = [
     'requests',
     'arrow',
     'bleach',
+    'pika',
 ]
 
 tests_require = [
@@ -33,7 +34,7 @@ tests_require = [
 
 setup(
     name='fmn.consumer',
-    version='1.0.0',
+    version='1.0.1',
     description='Backend worker daemon for Fedora Notifications',
     long_description=get_description(),
     author='Ralph Bean',
